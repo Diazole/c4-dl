@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": [
+        "./generated"
+    ],
+    "python.linting.enabled": true
+}
