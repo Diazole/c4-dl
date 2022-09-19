@@ -138,12 +138,12 @@ def get_vod_stream(url: str):
         resp = req.json()
 
         brand_title = str(resp['brandTitle'])
-        brand_title.replace(':', ' ')
-        brand_title.replace('/', ' ')
+        brand_title = brand_title.replace(':', ' ')
+        brand_title = brand_title.replace('/', ' ')
 
         episode_title = str(resp['episodeTitle'])
-        episode_title.replace(':', ' ')
-        episode_title.replace('/', ' ')
+        episode_title = episode_title.replace(':', ' ')
+        episode_title = episode_title.replace('/', ' ')
 
         vod_stream = VodStream('', '', brand_title, episode_title)
 
