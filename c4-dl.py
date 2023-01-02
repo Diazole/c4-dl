@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import struct
 import sys
+import xml.etree.ElementTree as ET
 import requests
 
 from Crypto.Cipher import AES
@@ -74,10 +75,8 @@ class Status:
 
 
 class VodConfig:
-    def __init__(self, vodbs_url: str, key: str, iv: str, drm_today: DrmToday, message: str):
+    def __init__(self, vodbs_url: str, drm_today: DrmToday, message: str):
         self.vodbs_url = vodbs_url
-        self.key = key
-        self.iv = iv
         self.drm_today = drm_today
         self.message = message
 
@@ -114,9 +113,13 @@ class LicenseResponse:
         return resp
 
 
-def decrypt_token(key: str, iv: str, token: str):
+def decrypt_token(token: str):
     try:
-        cipher = AES.new(bytes(key, 'UTF-8'), AES.MODE_CBC, bytes(iv, 'UTF-8'))
+        cipher = AES.new(
+            b"\x41\x59\x44\x49\x44\x38\x53\x44\x46\x42\x50\x34\x4d\x38\x44\x48",
+            AES.MODE_CBC,
+            b"\x31\x44\x43\x44\x30\x33\x38\x33\x44\x4b\x44\x46\x53\x4c\x38\x32"
+        )
         decoded_token = base64.b64decode(token)
         decrypted_string = unpad(cipher.decrypt(
             decoded_token), 16, style='pkcs7').decode('UTF-8')
@@ -127,33 +130,34 @@ def decrypt_token(key: str, iv: str, token: str):
         raise
 
 
-def get_vod_stream(url: str):
+def get_vod_stream(asset_id: str):
     try:
+        url = f'https://ais.channel4.com/asset/{asset_id}?client=android-mod'
         req = requests.get(url)
         if req.status_code == requests.codes['not_found']:
             print('[!] Invalid URL !!!')
             sys.exit(1)
 
         req.raise_for_status
-        resp = req.json()
 
-        brand_title = str(resp['brandTitle'])
+        root = ET.fromstring(req.content)
+        asset_info_xpath = './assetInfo/'
+
+        brand_title = root.find(asset_info_xpath + 'brandTitle').text
         brand_title = brand_title.replace(':', ' ')
         brand_title = brand_title.replace('/', ' ')
 
-        episode_title = str(resp['episodeTitle'])
+        episode_title = root.find(asset_info_xpath + 'episodeTitle').text
         episode_title = episode_title.replace(':', ' ')
         episode_title = episode_title.replace('/', ' ')
 
-        vod_stream = VodStream('', '', brand_title, episode_title)
+        stream_xpath = f'{asset_info_xpath}videoProfiles/videoProfile[@name=\'widevine-stream-4\']/stream/'
+        uri = root.find(stream_xpath + 'uri').text
+        token = root.find(stream_xpath + 'token').text
 
-        for field in resp['videoProfiles']:
-            if field['name'] == 'dashwv-dyn-stream-1':
-                stream = field['streams'][0]
-                vod_stream.token = stream['token']
-                vod_stream.uri = stream['uri']
-                return vod_stream
-        raise  # pylint: disable=misplaced-bare-raise
+        vod_stream = VodStream(token, uri, brand_title, episode_title)
+
+        return vod_stream
     except:  # pylint:disable=bare-except
         print('[!] Failed getting VOD stream !!!')
         raise
@@ -201,8 +205,7 @@ def get_config():
         message = config['protectionData']['com.widevine.alpha']['drmtoday']['message']
         video = Video(video_type, '')
         drm_today = DrmToday('', '', video, message)
-        vod_config = VodConfig(
-            config['vodbsUrl'], config['bytes1'], config['bytes2'], drm_today, '')
+        vod_config = VodConfig(config['vodbsUrl'], drm_today, '')
         return vod_config
     except:  # pylint:disable=bare-except
         print('[!] Failed getting production config !!!')
@@ -307,7 +310,7 @@ def download_streams(mpd: str, output_title: str):
             '--no-warnings',
             '--progress',
             '-f',
-            'bv,ba',
+            'bv,wa', # Prevent audo description
             mpd,
             '-o',
             f'{TMP_DIR}/{output_title}/encrypted_{output_title}.%(height)sp.%(vcodec)s%(acodec)s.%(ext)s'
@@ -453,18 +456,19 @@ def main():
     # Get the prod config
     config = get_config()
 
+    # Get asset ID
+    asset_id = get_asset_id(url)
+
     # Get the MPD and encrypted stream token
-    encrypted_vod_stream = get_vod_stream(config.vodbs_url.replace(
-        '{programmeId}', url.strip('/').split('/')[-1]))
+    encrypted_vod_stream = get_vod_stream(asset_id)
 
     # Decrypt the stream token
-    decrypted_vod_stream = decrypt_token(
-        config.key, config.iv, encrypted_vod_stream.token)
+    decrypted_vod_stream = decrypt_token(encrypted_vod_stream.token)
 
     # Setup the initial license request
     config.drm_today.video.url = encrypted_vod_stream.uri  # MPD
     config.drm_today.token = decrypted_vod_stream.token  # Decrypted Token
-    config.drm_today.request_id = get_asset_id(url)  # Video asset ID
+    config.drm_today.request_id = asset_id  # Video asset ID
 
     # Get the SignedDrmCertificate (common privacy cert)
     service_cert = get_service_certificate(
